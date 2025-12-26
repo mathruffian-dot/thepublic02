@@ -2,11 +2,13 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Chronos AI 數位觀課儀表板</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     /* Custom scrollbar for a better dark mode experience */
@@ -47,27 +49,601 @@
     .blink-reminder {
       animation: blink-glow 2s ease-in-out infinite;
     }
+    /* Basic prose styles for rendered markdown */
+    .prose { color: #d1d5db; }
+    .prose h1, .prose h2, .prose h3 { color: #facc15; }
+    .prose a { color: #22d3ee; }
+    .prose strong { color: #e5e7eb; }
+    .prose blockquote { border-left-color: #475569; }
+    .prose code { color: #f0abfc; }
+    .prose pre { background-color: #1e293b; }
   </style>
-<script type="importmap">
-{
-  "imports": {
-    "rxjs": "https://esm.sh/rxjs@^7.8.2?conditions=es2015",
-    "rxjs/operators": "https://esm.sh/rxjs@^7.8.2/operators?conditions=es2015",
-    "rxjs/ajax": "https://esm.sh/rxjs@^7.8.2/ajax?conditions=es2015",
-    "rxjs/webSocket": "https://esm.sh/rxjs@^7.8.2/webSocket?conditions=es2015",
-    "rxjs/testing": "https://esm.sh/rxjs@^7.8.2/testing?conditions=es2015",
-    "rxjs/fetch": "https://esm.sh/rxjs@^7.8.2/fetch?conditions=es2015",
-    "@angular/common": "https://esm.sh/@angular/common@^21.0.6?external=rxjs",
-    "@angular/common/http": "https://esm.sh/@angular/common@^21.0.6/http?external=rxjs",
-    "@angular/core": "https://esm.sh/@angular/core@^21.0.6?external=rxjs",
-    "@angular/platform-browser": "https://esm.sh/@angular/platform-browser@^21.0.6?external=rxjs",
-    "@angular/compiler": "https://esm.sh/@angular/compiler@^21.0.6?external=rxjs",
-    "@angular/forms": "https://esm.sh/@angular/forms@^21.0.6?external=rxjs"
-  }
-}
-</script>
 </head>
-<body class="bg-slate-950 text-slate-200 antialiased">
-  <app-root></app-root>
+<body class="bg-slate-950 text-slate-200 antialiased font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+    // --- GEMINI API SERVICE ---
+    const API_KEY_STORAGE_ITEM = 'gemini_api_key';
+    const API_KEY_EXPIRATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+    const geminiService = {
+      apiKey: null,
+      model: 'gemini-2.5-flash',
+      getEndpoint() {
+        return `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`;
+      },
+      loadApiKey() {
+        try {
+          const stored = localStorage.getItem(API_KEY_STORAGE_ITEM);
+          if (stored) {
+            const { value, timestamp } = JSON.parse(stored);
+            if (Date.now() - timestamp < API_KEY_EXPIRATION_MS) {
+              this.apiKey = value;
+            } else {
+              this.clearApiKey();
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load API key from localStorage', error);
+          this.clearApiKey();
+        }
+      },
+      setApiKey(key) {
+        const data = { value: key, timestamp: Date.now() };
+        try {
+          localStorage.setItem(API_KEY_STORAGE_ITEM, JSON.stringify(data));
+          this.apiKey = key;
+        } catch (error) {
+          console.error('Failed to save API key to localStorage', error);
+        }
+      },
+      clearApiKey() {
+        this.apiKey = null;
+        try {
+          localStorage.removeItem(API_KEY_STORAGE_ITEM);
+        } catch (error) {
+          console.error('Failed to remove API key from localStorage', error);
+        }
+      },
+      hasApiKey() {
+        this.loadApiKey();
+        return !!this.apiKey;
+      },
+      async fetchWithRetry(body, maxRetries = 3) {
+        this.loadApiKey();
+        if (!this.apiKey && !window.process?.env?.API_KEY) {
+            throw new Error('API 金鑰未設定或已過期。');
+        }
+        const apiKey = this.apiKey || window.process?.env?.API_KEY;
+
+        let attempt = 0;
+        while (attempt < maxRetries) {
+          try {
+            const response = await fetch(`${this.getEndpoint()}?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            });
+            if (!response.ok) {
+              if (response.status >= 500 && attempt < maxRetries - 1) throw new Error(`Server error: ${response.status}`);
+              const errorData = await response.json();
+              throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+            }
+            const data = await response.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text === undefined) throw new Error("未能從 AI 回應中解析文本。");
+            return text;
+          } catch (error) {
+            console.error(`Attempt ${attempt + 1} failed:`, error);
+            attempt++;
+            if (attempt >= maxRetries) throw error;
+            const delay = Math.pow(2, attempt) * 1000;
+            await new Promise(res => setTimeout(res, delay));
+          }
+        }
+      },
+      async polishText(text) {
+        const prompt = `你是一位資深教育與教學顧問。請將以下這段口語化的課堂觀察筆記，改寫成專業、精簡、且符合教育專業術語的書面文字。移除贅字，聚焦於關鍵的教學行為與學生反應。\n\n原始筆記：\n"${text}"\n\n改寫後的專業紀錄：`;
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.5, maxOutputTokens: 256 },
+        };
+        return this.fetchWithRetry(body);
+      },
+      async generateReport(logData) {
+        const formattedLogData = JSON.stringify(logData, null, 2);
+        const prompt = `你是一位頂尖的 AI 教學分析師，專精於課堂觀察與教學回饋。你的任務是根據以下 JSON 格式的觀課數據，生成一份專業、深入、且結構化的 Markdown 格式觀課報告。請使用繁體中文。\n\n**觀課數據:**\n\`\`\`json\n${formattedLogData}\n\`\`\`\n\n**報告生成指示:**\n請嚴格依照以下 Markdown 結構生成報告，並在各段落中提供具體的數據支持、深入的分析與可行的建議。\n\n# Chronos AI 數位觀課報告: ${logData.subject}\n\n## 1. 整體教學風格分析\n* **教學模式分佈:** 根據計時數據，分析教師主要使用的教學模式（如：講述教學、小組討論等）及其時間佔比。\n* **教學風格判斷:** 綜合模式分佈與教學行為，判斷這堂課偏向哪種教學風格（例如：教師中心的指導式、學生中心的探究式、或是混合式教學）。\n\n## 2. 師生互動與班級經營\n* **互動頻率與類型:** 根據「正向鼓勵」、「糾正規範」、「開放提問」、「封閉提問」等行為數據，分析師生互動的頻率與品質。\n* **班級氣氛:** 綜合互動數據與質性紀錄，推論班級的學習氣氛是活躍、緊張、還是沉悶？\n* **巡視與個別指導:** 根據「巡視走動」的數據，評估教師對學生個別狀況的關注程度。\n\n## 3. 關鍵時刻與專注度趨勢\n* **專注度變化:** 根據紀錄的學生專注度數據，描述整堂課學生專注度的變化趨勢。\n* **轉折點分析:** 找出教學模式切換或特定教學行為發生時，是否對學生專注度產生顯著影響的「關鍵時刻」。\n\n## 4. 專業建議與亮點 (Strengths & Growths)\n* **教學亮點 (Strengths):** 根據數據，明確指出 2-3 個這堂課的教學優點。\n* **成長建議 (Growths):** 根據數據分析，提出 2-3 個具體、可行的專業發展建議。\n\n請開始生成報告。`;
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+        };
+        return this.fetchWithRetry(body);
+      }
+    };
+
+    // --- ICON COMPONENTS ---
+    const Icon = ({ name, className }) => {
+        const icons = {
+            'settings': <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></>,
+            'presentation': <><path d="M2 3h20" /><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3" /><path d="m7 21 5-5 5 5" /></>,
+            'users': <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
+            'edit-3': <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></>,
+            'cpu': <><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" /><path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" /></>,
+            'thumbs-up': <><path d="M7 10v12" /><path d="M18 10V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v6H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h2.5" /><path d="M18 10h-2.5" /><path d="M18 10a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2.5" /></>,
+            'alert-triangle': <><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></>,
+            'message-circle': <><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" /></>,
+            'help-circle': <><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></>,
+            'walk': <><circle cx="12" cy="4" r="2"/><path d="M15.5 20.9a2 2 0 0 0-1-3.3L12 16l-2.5 1.6a2 2 0 0 0-1 3.3"/><path d="m8.5 12.9-1.6 2.5a2 2 0 0 0 3.2 2.2l2.4-1.6"/><path d="m15.5 12.9 1.6 2.5a2 2 0 0 1-3.2 2.2l-2.4-1.6"/></>,
+            'magic': <><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></>,
+            'close': <><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>,
+            'loader': <><path d="M21 12a9 9 0 1 1-6.219-8.56"/></>
+        };
+        return <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{icons[name] || ''}</svg>
+    };
+
+    const StartButton = () => (
+      <div className="relative w-12 h-12 flex items-center justify-center">
+        <svg className="absolute w-full h-full text-slate-600 animate-spin-slow" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="50" cy="50" r="45" stroke="currentColor" strokeWidth="5" strokeDasharray="10 15"/>
+        </svg>
+        <svg className="relative w-6 h-6" viewBox="0 0 24 24" fill="url(#amberGradient)" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="amberGradient" x1="50%" y1="0%" x2="50%" y2="100%">
+              <stop offset="0%" stopColor="#FBBF24" />
+              <stop offset="100%" stopColor="#F59E0B" />
+            </linearGradient>
+          </defs>
+          <path d="M5 3l14 9-14 9V3z"/>
+        </svg>
+      </div>
+    );
+    
+    const StopButton = () => (
+      <div className="w-12 h-12 flex items-center justify-center">
+        <svg className="w-6 h-6" viewBox="0 0 24 24" fill="url(#rustGradient)" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="rustGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#F87171" />
+              <stop offset="100%" stopColor="#B91C1C" />
+            </linearGradient>
+          </defs>
+          <rect width="24" height="24" rx="4" />
+        </svg>
+      </div>
+    );
+
+    // --- MAIN APP COMPONENT ---
+    const App = () => {
+      // --- STATE MANAGEMENT ---
+      const [sessionActive, setSessionActive] = useState(false);
+      const [currentTime, setCurrentTime] = useState(new Date());
+      const [sessionStartTime, setSessionStartTime] = useState(null);
+      
+      const subjects = useMemo(() => ['國文', '英文', '數學', '物理', '化學', '生物', '地理', '歷史', '公民'], []);
+      const [selectedSubject, setSelectedSubject] = useState(subjects[0]);
+
+      // Modals
+      const [isSettingsModalVisible, setSettingsModalVisible] = useState(false);
+      const [isSummaryModalVisible, setSummaryModalVisible] = useState(false);
+      const [isApiKeyMissingPromptVisible, setApiKeyMissingPromptVisible] = useState(false);
+      
+      // API Key
+      const [tempApiKey, setTempApiKey] = useState('');
+      const [hasApiKey, setHasApiKey] = useState(geminiService.hasApiKey());
+
+      // AI Interaction
+      const [isLoadingAI, setLoadingAI] = useState(false);
+      const [aiReportContent, setAiReportContent] = useState('');
+      const [isPolishingNote, setPolishingNote] = useState(false);
+
+      const [teachingModes, setTeachingModes] = useState([
+        { id: 'lecture', name: '講述教學', icon: 'presentation', active: false, elapsedTime: 0 },
+        { id: 'group-discussion', name: '小組討論', icon: 'users', active: false, elapsedTime: 0 },
+        { id: 'practice', name: '實作/演算', icon: 'edit-3', active: false, elapsedTime: 0 },
+        { id: 'digital-tool', name: '數位運用', icon: 'cpu', active: false, elapsedTime: 0 },
+      ]);
+      const [teachingActions, setTeachingActions] = useState([
+        { id: 'praise', name: '正向鼓勵', icon: 'thumbs-up', count: 0 },
+        { id: 'correction', name: '糾正規範', icon: 'alert-triangle', count: 0 },
+        { id: 'open-question', name: '開放提問', icon: 'message-circle', count: 0 },
+        { id: 'closed-question', name: '封閉提問', icon: 'help-circle', count: 0 },
+        { id: 'patrol', name: '巡視走動', icon: 'walk', count: 0 },
+      ]);
+      
+      const [logs, setLogs] = useState([]);
+      const [qualitativeNote, setQualitativeNote] = useState('');
+      const [engagementValue, setEngagementValue] = useState(50);
+      const [lastEngagementLogTime, setLastEngagementLogTime] = useState(null);
+      const [needsEngagementReminder, setNeedsEngagementReminder] = useState(false);
+      
+      // --- COMPUTED VALUES (useMemo) ---
+      const formatTime = useCallback((seconds) => {
+        const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+        const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+        const s = (seconds % 60).toString().padStart(2, '0');
+        return `${h}:${m}:${s}`;
+      }, []);
+
+      const sessionDuration = useMemo(() => {
+        if (!sessionActive || !sessionStartTime) return '00:00:00';
+        const diff = Math.floor((currentTime.getTime() - sessionStartTime) / 1000);
+        return formatTime(diff);
+      }, [sessionActive, sessionStartTime, currentTime, formatTime]);
+
+      const sanitizedAiReportContent = useMemo(() => {
+        if (!aiReportContent) return { __html: '' };
+        return { __html: marked.parse(aiReportContent) };
+      }, [aiReportContent]);
+
+      const engagementColor = useMemo(() => {
+        if (engagementValue > 66) return 'bg-green-500';
+        if (engagementValue > 33) return 'bg-yellow-500';
+        return 'bg-red-500';
+      }, [engagementValue]);
+
+      // --- EFFECTS (useEffect) ---
+      useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        return () => clearInterval(timer);
+      }, []);
+      
+      useEffect(() => {
+        let timer;
+        if (sessionActive) {
+          timer = setInterval(() => {
+            setTeachingModes(prevModes => 
+              prevModes.map(mode => 
+                mode.active ? { ...mode, elapsedTime: mode.elapsedTime + 1 } : mode
+              )
+            );
+          }, 1000);
+        }
+        return () => clearInterval(timer);
+      }, [sessionActive]);
+
+      useEffect(() => {
+        let reminderCheck;
+        if (sessionActive) {
+            reminderCheck = setInterval(() => {
+                const now = Date.now();
+                const timeSinceLastAction = now - (lastEngagementLogTime || sessionStartTime || now);
+                setNeedsEngagementReminder(timeSinceLastAction > 5 * 60 * 1000);
+            }, 10000); // Check every 10 seconds
+        } else {
+            setNeedsEngagementReminder(false);
+        }
+        return () => clearInterval(reminderCheck);
+      }, [sessionActive, lastEngagementLogTime, sessionStartTime]);
+      
+      // --- METHODS / HANDLERS ---
+      const addLog = useCallback((message, type) => {
+        setLogs(prev => [{ timestamp: Date.now(), message, type }, ...prev].slice(0, 100));
+      }, []);
+
+      const toggleSession = useCallback(() => {
+        const isActive = sessionActive;
+        if (isActive) { // Stopping
+          setSessionActive(false);
+          addLog('觀課結束', 'session');
+          setSummaryModalVisible(true);
+        } else { // Starting
+          setLogs([]);
+          setTeachingModes(modes => modes.map(m => ({ ...m, active: false, elapsedTime: 0 })));
+          setTeachingActions(actions => actions.map(a => ({ ...a, count: 0 })));
+          setQualitativeNote('');
+          setAiReportContent('');
+          setEngagementValue(50);
+          setLastEngagementLogTime(null);
+          setNeedsEngagementReminder(false);
+          
+          setSessionActive(true);
+          setSessionStartTime(Date.now());
+          addLog(`觀課開始 - 科目: ${selectedSubject}`, 'session');
+        }
+      }, [sessionActive, selectedSubject, addLog]);
+
+      const toggleTeachingMode = useCallback((modeId) => {
+        if (!sessionActive) return;
+        let modeName = '';
+        setTeachingModes(prevModes => 
+          prevModes.map(mode => {
+            if (mode.id === modeId) {
+              modeName = mode.name;
+              return { ...mode, active: !mode.active };
+            }
+            return mode;
+          })
+        );
+        const newModeState = teachingModes.find(m => m.id === modeId)?.active;
+        addLog(`${modeName} ${!newModeState ? '啟用' : '停用'}`, 'mode');
+      }, [sessionActive, addLog, teachingModes]);
+
+      const recordAction = useCallback((actionId) => {
+        if (!sessionActive) return;
+        let actionName = '';
+        setTeachingActions(prevActions => 
+          prevActions.map(action => {
+            if (action.id === actionId) {
+              actionName = action.name;
+              return { ...action, count: action.count + 1 };
+            }
+            return action;
+          })
+        );
+        addLog(`紀錄: ${actionName}`, 'action');
+      }, [sessionActive, addLog]);
+      
+      const onEngagementChange = useCallback((e) => {
+        if (!sessionActive) return;
+        const value = parseInt(e.target.value, 10);
+        setEngagementValue(value);
+        
+        const level = value > 66 ? '高' : value > 33 ? '中' : '低';
+        addLog(`學生專注度: ${level}`, 'engagement');
+        setLastEngagementLogTime(Date.now());
+        setNeedsEngagementReminder(false);
+      }, [sessionActive, addLog]);
+
+      const submitQualitativeNote = useCallback(() => {
+        if (!sessionActive || !qualitativeNote.trim()) return;
+        addLog(`質性紀錄: ${qualitativeNote}`, 'note');
+        setQualitativeNote('');
+      }, [sessionActive, qualitativeNote, addLog]);
+
+      const saveApiKey = useCallback(() => {
+        if (tempApiKey) {
+          geminiService.setApiKey(tempApiKey);
+          setHasApiKey(true);
+          setSettingsModalVisible(false);
+          setApiKeyMissingPromptVisible(false);
+          setTempApiKey('');
+        }
+      }, [tempApiKey]);
+      
+      const checkApiKey = useCallback(() => {
+        if (!geminiService.hasApiKey()) {
+          setApiKeyMissingPromptVisible(true);
+          return false;
+        }
+        return true;
+      }, []);
+      
+      const polishNote = async () => {
+        if (!checkApiKey() || !qualitativeNote.trim()) return;
+        setPolishingNote(true);
+        try {
+          const polished = await geminiService.polishText(qualitativeNote);
+          setQualitativeNote(polished);
+        } catch (error) {
+          console.error('Error polishing note:', error);
+          alert('AI 潤飾時發生錯誤，請稍後再試。');
+        } finally {
+          setPolishingNote(false);
+        }
+      };
+      
+      const generateFullLog = useCallback(() => ({
+        subject: selectedSubject,
+        sessionStart: sessionStartTime,
+        sessionEnd: Date.now(),
+        modes: teachingModes.map(m => ({ name: m.name, totalTime: m.elapsedTime })),
+        actions: teachingActions.map(a => ({ name: a.name, count: a.count })),
+        logs: [...logs].reverse() // chronological order
+      }), [selectedSubject, sessionStartTime, teachingModes, teachingActions, logs]);
+
+      const generateAiReport = async () => {
+        if (!checkApiKey()) return;
+        setLoadingAI(true);
+        setAiReportContent('');
+        try {
+          const fullLog = generateFullLog();
+          const report = await geminiService.generateReport(fullLog);
+          setAiReportContent(report);
+        } catch (error) {
+          console.error('Error generating AI report:', error);
+          setAiReportContent('### 報告生成失敗\n\n抱歉，與 AI 連線時發生錯誤。請檢查您的 API 金鑰是否正確，或稍後再試。');
+        } finally {
+          setLoadingAI(false);
+        }
+      };
+      
+      const copyLogToClipboard = useCallback(() => {
+        const logData = generateFullLog();
+        let reportText = `Chronos AI 觀課紀錄\n科目: ${logData.subject}\n開始時間: ${new Date(logData.sessionStart).toLocaleString()}\n結束時間: ${new Date(logData.sessionEnd).toLocaleString()}\n\n--- 教學模式計時 ---\n`;
+        logData.modes.forEach(m => { reportText += `${m.name}: ${formatTime(m.totalTime)}\n`; });
+        reportText += `\n--- 教學行為計次 ---\n`;
+        logData.actions.forEach(a => { reportText += `${a.name}: ${a.count} 次\n`; });
+        reportText += `\n--- 詳細事件紀錄 ---\n`;
+        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}\n`; });
+        navigator.clipboard.writeText(reportText).then(() => alert('紀錄已複製到剪貼簿！')).catch(err => alert('複製失敗。'));
+      }, [generateFullLog, formatTime]);
+
+      const downloadLogAsTxt = useCallback(() => {
+        const logData = generateFullLog();
+        let reportText = `Chronos AI 觀課紀錄\n科目: ${logData.subject}\n開始時間: ${new Date(logData.sessionStart).toLocaleString()}\n結束時間: ${new Date(logData.sessionEnd).toLocaleString()}\n\n--- 教學模式計時 ---\n`;
+        logData.modes.forEach(m => { reportText += `${m.name}: ${formatTime(m.totalTime)}\n`; });
+        reportText += `\n--- 教學行為計次 ---\n`;
+        logData.actions.forEach(a => { reportText += `${a.name}: ${a.count} 次\n`; });
+        reportText += `\n--- 詳細事件紀錄 ---\n`;
+        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}\n`; });
+        
+        const blob = new Blob(['\uFEFF' + reportText], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Chronos-AI-Log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, [generateFullLog, formatTime]);
+
+
+      return (
+        <div className="flex flex-col h-screen">
+          {/* Header */}
+          <header className="sticky top-0 z-30 w-full p-3 bg-slate-900/50 backdrop-blur-lg border-b border-slate-700/50">
+            <div className="container mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <h1 className="text-xl md:text-2xl font-bold text-amber-400 tracking-wider">Chronos AI</h1>
+                {!sessionActive ? (
+                  <select value={selectedSubject} onChange={(e) => setSelectedSubject(e.target.value)} className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg focus:ring-amber-500 focus:border-amber-500 block p-2">
+                    {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                ) : (
+                  <div className="bg-slate-800 text-amber-400 font-semibold px-4 py-2 rounded-lg text-sm">{selectedSubject}</div>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="hidden md:flex items-center gap-2 bg-slate-800/50 px-4 py-2 rounded-full text-lg font-mono tracking-widest">
+                  <span>{currentTime.toLocaleTimeString('en-GB')}</span>
+                </div>
+                <button onClick={() => setSettingsModalVisible(true)} className="p-2 rounded-full hover:bg-slate-700 transition-colors">
+                    <Icon name="settings" className="w-6 h-6 text-slate-400"/>
+                </button>
+                <button onClick={toggleSession} className={`w-20 h-12 flex items-center justify-center rounded-lg relative overflow-hidden transition-all duration-300 ease-in-out ${sessionActive ? 'bg-red-900/50 hover:bg-red-800/60' : 'bg-slate-800 hover:bg-slate-700'}`}>
+                    {!sessionActive ? <StartButton /> : <StopButton />}
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Content */}
+          <main className="flex-1 container mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4 overflow-y-auto">
+            <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-4">
+                <h2 className="text-lg font-semibold text-amber-500">教學模式 (States)</h2>
+                {teachingModes.map(mode => (
+                  <div key={mode.id} onClick={() => toggleTeachingMode(mode.id)} className={`p-4 rounded-lg border cursor-pointer transition-all duration-300 flex items-center justify-between ${mode.active ? 'bg-slate-800/80 border-amber-500/50' : 'bg-slate-900 border-slate-700'} ${sessionActive ? 'hover:border-amber-600 hover:bg-slate-800' : 'cursor-not-allowed opacity-60'}`}>
+                    <div className="flex items-center gap-4"><Icon name={mode.icon} className="w-6 h-6 text-amber-400"/> <span className="font-medium">{mode.name}</span></div>
+                    <div className={`font-mono text-lg ${mode.active ? 'text-amber-400' : ''}`}>{formatTime(mode.elapsedTime)}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-4">
+                <h2 className="text-lg font-semibold text-rose-500">教學行為 (Actions)</h2>
+                {teachingActions.map(action => (
+                  <div key={action.id} onClick={() => recordAction(action.id)} className={`p-4 rounded-lg border bg-slate-900 border-slate-700 transition-colors flex items-center justify-between ${sessionActive ? 'cursor-pointer hover:border-rose-500/80 hover:bg-slate-800' : 'cursor-not-allowed opacity-50'}`}>
+                    <div className="flex items-center gap-4"><Icon name={action.icon} className="w-6 h-6 text-rose-400"/> <span className="font-medium">{action.name}</span></div>
+                    <div className="font-mono text-lg text-rose-400 bg-slate-800 px-3 py-1 rounded-md">{action.count}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col bg-slate-900/50 border border-slate-800 rounded-lg p-4 h-[60vh] lg:h-auto">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-700 mb-2">
+                <h2 className="text-lg font-semibold text-cyan-400">即時紀錄流</h2>
+                <div className="font-mono text-cyan-400">{sessionDuration}</div>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                {logs.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-slate-500"><span>點擊開始按鈕以開始觀課</span></div>
+                ) : (
+                  logs.map(log => (
+                    <div key={log.timestamp} className={`text-sm flex items-start gap-2 p-2 rounded-md ${log.type === 'action' || log.type === 'note' ? 'bg-slate-800/50' : log.type === 'mode' ? 'bg-amber-900/20' : ''}`}>
+                      <span className="font-mono text-slate-500 pt-px">{new Date(log.timestamp).toLocaleTimeString('en-GB')}</span>
+                      <p className="flex-1 text-slate-300">{log.message}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </main>
+
+          {/* Footer */}
+          <footer className={`sticky bottom-0 z-30 w-full p-3 bg-slate-900/50 backdrop-blur-lg border-t border-slate-700/50 transition-shadow duration-500 ${needsEngagementReminder ? 'blink-reminder' : ''}`}>
+            <div className="container mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-medium whitespace-nowrap">學生專注度</span>
+                <div className="w-full flex items-center gap-2">
+                  <span className="text-red-500">低</span>
+                  <div className="w-full h-2 rounded-full relative bg-slate-700">
+                    <div className={`absolute h-2 rounded-full ${engagementColor}`} style={{width: `${engagementValue}%`}}></div>
+                    <input type="range" min="0" max="100" value={engagementValue} onChange={onEngagementChange} disabled={!sessionActive} className="w-full h-2 bg-transparent appearance-none cursor-pointer absolute top-0 left-0" />
+                  </div>
+                  <span className="text-green-500">高</span>
+                </div>
+              </div>
+              <div className="md:col-span-2 flex items-center gap-2 relative">
+                <div className="relative w-full">
+                  <input type="text" value={qualitativeNote} onChange={e => setQualitativeNote(e.target.value)} onKeyUp={e => e.key === 'Enter' && submitQualitativeNote()} disabled={!sessionActive} placeholder="輸入質性紀錄..." className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 pr-24 focus:ring-amber-500 focus:border-amber-500 transition-colors" />
+                  <button onClick={polishNote} disabled={isPolishingNote || !qualitativeNote.trim()} className="absolute right-12 top-1/2 -translate-y-1/2 p-2 rounded-full hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    {isPolishingNote ? <Icon name="loader" className="w-5 h-5 text-amber-400 animate-spin"/> : <Icon name="magic" className="w-5 h-5 text-amber-400"/>}
+                  </button>
+                </div>
+                <button onClick={submitQualitativeNote} disabled={!sessionActive || !qualitativeNote.trim()} className="bg-amber-500 text-slate-900 font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition-colors disabled:bg-slate-600 disabled:cursor-not-allowed">發送</button>
+              </div>
+            </div>
+          </footer>
+
+          {/* Modals */}
+          {isSettingsModalVisible && (
+            <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center" onClick={() => setSettingsModalVisible(false)}>
+              <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-xl font-bold text-amber-400 mb-4">API 金鑰設定</h3>
+                <p className="text-slate-400 mb-4">請輸入您的 Google Gemini API 金鑰。此金鑰將安全地儲存在您的瀏覽器中，並在 2 小時後自動銷毀。</p>
+                <input type="password" value={tempApiKey} onChange={e => setTempApiKey(e.target.value)} placeholder="您的 API 金鑰..." className="w-full bg-slate-800 border border-slate-600 rounded-md p-2 mb-4 focus:ring-amber-500 focus:border-amber-500" />
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setSettingsModalVisible(false)} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">取消</button>
+                  <button onClick={saveApiKey} className="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">儲存</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isApiKeyMissingPromptVisible && (
+            <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center" onClick={() => setApiKeyMissingPromptVisible(false)}>
+              <div className="bg-slate-900 border border-rose-500 rounded-lg p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-xl font-bold text-rose-400 mb-4">缺少 API 金鑰</h3>
+                <p className="text-slate-400 mb-4">您需要設定 Google Gemini API 金鑰才能使用 AI 功能。</p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setApiKeyMissingPromptVisible(false)} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">稍後</button>
+                  <button onClick={() => { setSettingsModalVisible(true); setApiKeyMissingPromptVisible(false); }} className="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">前往設定</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isSummaryModalVisible && (
+            <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-3xl shadow-2xl flex flex-col h-[90vh]">
+                <header className="p-4 flex justify-between items-center border-b border-slate-700">
+                  <h3 className="text-xl font-bold text-amber-400">觀課總結報告</h3>
+                  <button onClick={() => setSummaryModalVisible(false)} className="p-2 rounded-full hover:bg-slate-700 transition-colors"><Icon name="close" className="w-6 h-6"/></button>
+                </header>
+                <main className="flex-1 p-6 overflow-y-auto">
+                  {isLoadingAI ? (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                      <Icon name="loader" className="w-12 h-12 text-amber-400 animate-spin mb-4"/>
+                      <p className="text-lg">AI 報告生成中，請稍候...</p>
+                      <p className="text-sm mt-2">這可能需要一點時間，感謝您的耐心。</p>
+                    </div>
+                  ) : aiReportContent ? (
+                    <div className="prose max-w-none" dangerouslySetInnerHTML={sanitizedAiReportContent}></div>
+                  ) : (
+                    <div className="text-center text-slate-400">
+                      <p className="mb-6">觀課已結束。您可以複製或下載原始紀錄，或點擊下方按鈕生成 AI 觀課報告。</p>
+                      <button onClick={generateAiReport} className="bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold py-3 px-6 rounded-lg text-lg hover:opacity-90 transition-opacity shadow-lg shadow-amber-500/20">✨ 生成 AI 觀課報告</button>
+                    </div>
+                  )}
+                </main>
+                <footer className="p-4 border-t border-slate-700 flex flex-wrap justify-end gap-3">
+                  <button onClick={copyLogToClipboard} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">複製紀錄</button>
+                  <button onClick={downloadLogAsTxt} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">下載 TXT</button>
+                </footer>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
 </body>
 </html>
