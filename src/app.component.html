@@ -1,0 +1,236 @@
+
+<div class="flex flex-col h-screen font-sans">
+  <!-- Header -->
+  <header class="sticky top-0 z-30 w-full p-3 bg-slate-900/50 backdrop-blur-lg border-b border-slate-700/50">
+    <div class="container mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <h1 class="text-xl md:text-2xl font-bold text-amber-400 tracking-wider">Chronos AI</h1>
+        @if (!sessionActive()) {
+          <select [(ngModel)]="selectedSubject" class="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg focus:ring-amber-500 focus:border-amber-500 block p-2">
+            @for (subject of subjects; track subject) {
+              <option [value]="subject">{{ subject }}</option>
+            }
+          </select>
+        } @else {
+          <div class="bg-slate-800 text-amber-400 font-semibold px-4 py-2 rounded-lg text-sm">{{ selectedSubject() }}</div>
+        }
+      </div>
+      <div class="flex items-center gap-4">
+        <div class="hidden md:flex items-center gap-2 bg-slate-800/50 px-4 py-2 rounded-full text-lg font-mono tracking-widest">
+          <span>{{ currentTime() | date:'HH:mm:ss' }}</span>
+        </div>
+        <button (click)="isSettingsModalVisible.set(true)" class="p-2 rounded-full hover:bg-slate-700 transition-colors">
+          <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+        </button>
+        <button (click)="toggleSession()" class="w-20 h-12 flex items-center justify-center rounded-lg relative overflow-hidden transition-all duration-300 ease-in-out" [class.bg-red-900/50]="sessionActive()" [class.bg-slate-800]="!sessionActive()" [class.hover:bg-red-800/60]="sessionActive()" [class.hover:bg-slate-700]="!sessionActive()">
+          @if (!sessionActive()) {
+            <!-- Start Button -->
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="absolute w-full h-full text-slate-600 animate-spin-slow" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="45" stroke="currentColor" stroke-width="5" stroke-dasharray="10 15"/>
+              </svg>
+              <svg class="relative w-6 h-6" viewBox="0 0 24 24" fill="url(#amberGradient)" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <linearGradient id="amberGradient" x1="50%" y1="0%" x2="50%" y2="100%">
+                    <stop offset="0%" stop-color="#FBBF24" />
+                    <stop offset="100%" stop-color="#F59E0B" />
+                  </linearGradient>
+                </defs>
+                <path d="M5 3l14 9-14 9V3z"/>
+              </svg>
+            </div>
+          } @else {
+            <!-- Stop Button -->
+            <div class="w-12 h-12 flex items-center justify-center">
+              <svg class="w-6 h-6" viewBox="0 0 24 24" fill="url(#rustGradient)" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <linearGradient id="rustGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#F87171" />
+                    <stop offset="100%" stop-color="#B91C1C" />
+                  </linearGradient>
+                </defs>
+                <rect width="24" height="24" rx="4" />
+              </svg>
+            </div>
+          }
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="flex-1 container mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4 overflow-y-auto">
+    <!-- Left Column: Modes & Actions -->
+    <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Teaching Modes -->
+      <div class="space-y-4">
+        <h2 class="text-lg font-semibold text-amber-500">教學模式 (States)</h2>
+        @for (mode of teachingModes(); track mode.id) {
+          <div (click)="toggleTeachingMode(mode)"
+               class="p-4 rounded-lg border cursor-pointer transition-all duration-300 flex items-center justify-between"
+               [class.bg-slate-800/80]="mode.active()"
+               [class.border-amber-500/50]="mode.active()"
+               [class.bg-slate-900]="!mode.active()"
+               [class.border-slate-700]="!mode.active()"
+               [class.hover:border-amber-600]="sessionActive()"
+               [class.hover:bg-slate-800]="sessionActive()">
+            <div class="flex items-center gap-4">
+              <svg [attr.data-lucide]="mode.icon" class="w-6 h-6 text-amber-400"></svg>
+              <span class="font-medium">{{ mode.name }}</span>
+            </div>
+            <div class="font-mono text-lg" [class.text-amber-400]="mode.active()">
+              {{ formatTime(mode.elapsedTime()) }}
+            </div>
+          </div>
+        }
+      </div>
+      <!-- Teaching Actions -->
+      <div class="space-y-4">
+        <h2 class="text-lg font-semibold text-rose-500">教學行為 (Actions)</h2>
+        @for (action of teachingActions(); track action.id) {
+          <div (click)="recordAction(action)"
+               class="p-4 rounded-lg border bg-slate-900 border-slate-700 cursor-pointer transition-colors hover:border-rose-500/80 hover:bg-slate-800 flex items-center justify-between"
+               [class.cursor-pointer]="sessionActive()"
+               [class.cursor-not-allowed]="!sessionActive()"
+               [class.opacity-50]="!sessionActive()">
+            <div class="flex items-center gap-4">
+              <svg [attr.data-lucide]="action.icon" class="w-6 h-6 text-rose-400"></svg>
+              <span class="font-medium">{{ action.name }}</span>
+            </div>
+            <div class="font-mono text-lg text-rose-400 bg-slate-800 px-3 py-1 rounded-md">
+              {{ action.count() }}
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+    <!-- Right Column: Log Stream -->
+    <div class="flex flex-col bg-slate-900/50 border border-slate-800 rounded-lg p-4 h-[60vh] lg:h-auto">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-700 mb-2">
+        <h2 class="text-lg font-semibold text-cyan-400">即時紀錄流</h2>
+        <div class="font-mono text-cyan-400">{{ sessionDuration() }}</div>
+      </div>
+      <div class="flex-1 overflow-y-auto space-y-2 pr-2">
+        @if (logs().length === 0) {
+          <div class="flex items-center justify-center h-full text-slate-500">
+            <span>點擊開始按鈕以開始觀課</span>
+          </div>
+        } @else {
+          @for (log of logs(); track log.timestamp) {
+            <div class="text-sm flex items-start gap-2 p-2 rounded-md" 
+                [class.bg-slate-800/50]="log.type === 'action' || log.type === 'note'"
+                [class.bg-amber-900/20]="log.type === 'mode'">
+              <span class="font-mono text-slate-500 pt-px">{{ log.timestamp | date:'HH:mm:ss' }}</span>
+              <p class="flex-1 text-slate-300">{{ log.message }}</p>
+            </div>
+          }
+        }
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="sticky bottom-0 z-30 w-full p-3 bg-slate-900/50 backdrop-blur-lg border-t border-slate-700/50 transition-shadow duration-500" [class.blink-reminder]="needsEngagementReminder()">
+    <div class="container mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+      <!-- Engagement Slider -->
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-medium whitespace-nowrap">學生專注度</span>
+        <div class="w-full flex items-center gap-2">
+          <span class="text-red-500">低</span>
+          <div class="w-full h-2 rounded-full relative bg-slate-700">
+            <div class="absolute h-2 rounded-full" [class]="engagementColor()" [style.width.%]="engagementValue()"></div>
+            <input type="range" min="0" max="100" [ngModel]="engagementValue()" (input)="onEngagementChange($event)" [disabled]="!sessionActive()"
+                   class="w-full h-2 bg-transparent appearance-none cursor-pointer absolute top-0 left-0">
+          </div>
+          <span class="text-green-500">高</span>
+        </div>
+      </div>
+      <!-- Qualitative Note Input -->
+      <div class="md:col-span-2 flex items-center gap-2 relative">
+        <div class="relative w-full">
+          <input type="text" [(ngModel)]="qualitativeNote" (keyup.enter)="submitQualitativeNote()" [disabled]="!sessionActive()" placeholder="輸入質性紀錄..."
+                 class="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 pr-24 focus:ring-amber-500 focus:border-amber-500 transition-colors">
+          <button (click)="polishNote()" [disabled]="isPolishingNote() || !qualitativeNote().trim()"
+                  class="absolute right-12 top-1/2 -translate-y-1/2 p-2 rounded-full hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            @if (isPolishingNote()) {
+              <svg class="w-5 h-5 text-amber-400 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            } @else {
+              <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+            }
+          </button>
+        </div>
+        <button (click)="submitQualitativeNote()" [disabled]="!sessionActive() || !qualitativeNote().trim()"
+                class="bg-amber-500 text-slate-900 font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition-colors disabled:bg-slate-600 disabled:cursor-not-allowed">
+          發送
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Modals -->
+
+  <!-- Settings Modal -->
+  @if (isSettingsModalVisible()) {
+    <div class="fixed inset-0 bg-black/70 z-40 flex items-center justify-center" (click)="isSettingsModalVisible.set(false)">
+      <div class="bg-slate-900 border border-slate-700 rounded-lg p-6 w-full max-w-md shadow-2xl" (click)="$event.stopPropagation()">
+        <h3 class="text-xl font-bold text-amber-400 mb-4">API 金鑰設定</h3>
+        <p class="text-slate-400 mb-4">請輸入您的 Google Gemini API 金鑰。此金鑰將安全地儲存在您的瀏覽器中，並在 2 小時後自動銷毀。</p>
+        <input type="password" [(ngModel)]="tempApiKey" placeholder="sk-..." class="w-full bg-slate-800 border border-slate-600 rounded-md p-2 mb-4 focus:ring-amber-500 focus:border-amber-500">
+        <div class="flex justify-end gap-3">
+          <button (click)="isSettingsModalVisible.set(false)" class="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">取消</button>
+          <button (click)="saveApiKey()" class="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">儲存</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- API Key Missing Prompt -->
+  @if (isApiKeyMissingPromptVisible()) {
+     <div class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center" (click)="isApiKeyMissingPromptVisible.set(false)">
+      <div class="bg-slate-900 border border-rose-500 rounded-lg p-6 w-full max-w-md shadow-2xl" (click)="$event.stopPropagation()">
+        <h3 class="text-xl font-bold text-rose-400 mb-4">缺少 API 金鑰</h3>
+        <p class="text-slate-400 mb-4">您需要設定 Google Gemini API 金鑰才能使用 AI 功能。</p>
+        <div class="flex justify-end gap-3">
+          <button (click)="isApiKeyMissingPromptVisible.set(false)" class="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">稍後</button>
+          <button (click)="isSettingsModalVisible.set(true); isApiKeyMissingPromptVisible.set(false)" class="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">前往設定</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Summary Modal -->
+  @if (isSummaryModalVisible()) {
+    <div class="fixed inset-0 bg-black/70 z-40 flex items-center justify-center p-4">
+      <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-3xl shadow-2xl flex flex-col h-[90vh]">
+        <header class="p-4 flex justify-between items-center border-b border-slate-700">
+          <h3 class="text-xl font-bold text-amber-400">觀課總結報告</h3>
+          <button (click)="isSummaryModalVisible.set(false)" class="p-2 rounded-full hover:bg-slate-700 transition-colors">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
+        </header>
+        <main class="flex-1 p-6 overflow-y-auto">
+          @if (isLoadingAI()) {
+            <div class="flex flex-col items-center justify-center h-full text-slate-400">
+              <svg class="w-12 h-12 text-amber-400 animate-spin mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              <p class="text-lg">AI 報告生成中，請稍候...</p>
+              <p class="text-sm mt-2">這可能需要一點時間，感謝您的耐心。</p>
+            </div>
+          } @else if (aiReportContent()) {
+            <div class="prose prose-invert prose-headings:text-amber-400 prose-a:text-cyan-400 max-w-none" [innerHTML]="sanitizedAiReportContent()"></div>
+          } @else {
+            <div class="text-center text-slate-400">
+                <p class="mb-6">觀課已結束。您可以複製或下載原始紀錄，或點擊下方按鈕生成 AI 觀課報告。</p>
+                <button (click)="generateAiReport()" class="bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold py-3 px-6 rounded-lg text-lg hover:opacity-90 transition-opacity shadow-lg shadow-amber-500/20">
+                    ✨ 生成 AI 觀課報告
+                </button>
+            </div>
+          }
+        </main>
+        <footer class="p-4 border-t border-slate-700 flex flex-wrap justify-end gap-3">
+          <button (click)="copyLogToClipboard()" class="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">複製紀錄</button>
+          <button (click)="downloadLogAsTxt()" class="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">下載 TXT</button>
+        </footer>
+      </div>
+    </div>
+  }
+</div>

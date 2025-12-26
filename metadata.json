@@ -1,0 +1,5 @@
+{
+  "name": "Chronos AI 數位觀課儀表板",
+  "description": "一個專為中學教師設計的課堂觀察工具，整合了計時、行為紀錄、以及 Google Gemini AI 的分析功能。",
+  "requestFramePermissions": []
+}
