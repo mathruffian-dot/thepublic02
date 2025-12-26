@@ -65,105 +65,6 @@
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
-    // --- GEMINI API SERVICE ---
-    const API_KEY_STORAGE_ITEM = 'gemini_api_key';
-    const API_KEY_EXPIRATION_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-    const geminiService = {
-      apiKey: null,
-      model: 'gemini-2.5-flash',
-      getEndpoint() {
-        return `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`;
-      },
-      loadApiKey() {
-        try {
-          const stored = localStorage.getItem(API_KEY_STORAGE_ITEM);
-          if (stored) {
-            const { value, timestamp } = JSON.parse(stored);
-            if (Date.now() - timestamp < API_KEY_EXPIRATION_MS) {
-              this.apiKey = value;
-            } else {
-              this.clearApiKey();
-            }
-          }
-        } catch (error) {
-          console.error('Failed to load API key from localStorage', error);
-          this.clearApiKey();
-        }
-      },
-      setApiKey(key) {
-        const data = { value: key, timestamp: Date.now() };
-        try {
-          localStorage.setItem(API_KEY_STORAGE_ITEM, JSON.stringify(data));
-          this.apiKey = key;
-        } catch (error) {
-          console.error('Failed to save API key to localStorage', error);
-        }
-      },
-      clearApiKey() {
-        this.apiKey = null;
-        try {
-          localStorage.removeItem(API_KEY_STORAGE_ITEM);
-        } catch (error) {
-          console.error('Failed to remove API key from localStorage', error);
-        }
-      },
-      hasApiKey() {
-        this.loadApiKey();
-        return !!this.apiKey;
-      },
-      async fetchWithRetry(body, maxRetries = 3) {
-        this.loadApiKey();
-        if (!this.apiKey && !window.process?.env?.API_KEY) {
-            throw new Error('API 金鑰未設定或已過期。');
-        }
-        const apiKey = this.apiKey || window.process?.env?.API_KEY;
-
-        let attempt = 0;
-        while (attempt < maxRetries) {
-          try {
-            const response = await fetch(`${this.getEndpoint()}?key=${apiKey}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            if (!response.ok) {
-              if (response.status >= 500 && attempt < maxRetries - 1) throw new Error(`Server error: ${response.status}`);
-              const errorData = await response.json();
-              throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
-            }
-            const data = await response.json();
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text === undefined) throw new Error("未能從 AI 回應中解析文本。");
-            return text;
-          } catch (error) {
-            console.error(`Attempt ${attempt + 1} failed:`, error);
-            attempt++;
-            if (attempt >= maxRetries) throw error;
-            const delay = Math.pow(2, attempt) * 1000;
-            await new Promise(res => setTimeout(res, delay));
-          }
-        }
-      },
-      async polishText(text) {
-        const prompt = `你是一位資深教育與教學顧問。請將以下這段口語化的課堂觀察筆記，改寫成專業、精簡、且符合教育專業術語的書面文字。移除贅字，聚焦於關鍵的教學行為與學生反應。\n\n原始筆記：\n"${text}"\n\n改寫後的專業紀錄：`;
-        const body = {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.5, maxOutputTokens: 256 },
-        };
-        return this.fetchWithRetry(body);
-      },
-      async generateReport(logData) {
-        const formattedLogData = JSON.stringify(logData, null, 2);
-        const prompt = `你是一位頂尖的 AI 教學分析師，專精於課堂觀察與教學回饋。你的任務是根據以下 JSON 格式的觀課數據，生成一份專業、深入、且結構化的 Markdown 格式觀課報告。請使用繁體中文。\n\n**觀課數據:**\n\`\`\`json\n${formattedLogData}\n\`\`\`\n\n**報告生成指示:**\n請嚴格依照以下 Markdown 結構生成報告，並在各段落中提供具體的數據支持、深入的分析與可行的建議。\n\n# Chronos AI 數位觀課報告: ${logData.subject}\n\n## 1. 整體教學風格分析\n* **教學模式分佈:** 根據計時數據，分析教師主要使用的教學模式（如：講述教學、小組討論等）及其時間佔比。\n* **教學風格判斷:** 綜合模式分佈與教學行為，判斷這堂課偏向哪種教學風格（例如：教師中心的指導式、學生中心的探究式、或是混合式教學）。\n\n## 2. 師生互動與班級經營\n* **互動頻率與類型:** 根據「正向鼓勵」、「糾正規範」、「開放提問」、「封閉提問」等行為數據，分析師生互動的頻率與品質。\n* **班級氣氛:** 綜合互動數據與質性紀錄，推論班級的學習氣氛是活躍、緊張、還是沉悶？\n* **巡視與個別指導:** 根據「巡視走動」的數據，評估教師對學生個別狀況的關注程度。\n\n## 3. 關鍵時刻與專注度趨勢\n* **專注度變化:** 根據紀錄的學生專注度數據，描述整堂課學生專注度的變化趨勢。\n* **轉折點分析:** 找出教學模式切換或特定教學行為發生時，是否對學生專注度產生顯著影響的「關鍵時刻」。\n\n## 4. 專業建議與亮點 (Strengths & Growths)\n* **教學亮點 (Strengths):** 根據數據，明確指出 2-3 個這堂課的教學優點。\n* **成長建議 (Growths):** 根據數據分析，提出 2-3 個具體、可行的專業發展建議。\n\n請開始生成報告。`;
-        const body = {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
-        };
-        return this.fetchWithRetry(body);
-      }
-    };
-
     // --- ICON COMPONENTS ---
     const Icon = ({ name, className }) => {
         const icons = {
@@ -226,19 +127,8 @@
       const [selectedSubject, setSelectedSubject] = useState(subjects[0]);
 
       // Modals
-      const [isSettingsModalVisible, setSettingsModalVisible] = useState(false);
       const [isSummaryModalVisible, setSummaryModalVisible] = useState(false);
-      const [isApiKeyMissingPromptVisible, setApiKeyMissingPromptVisible] = useState(false);
       
-      // API Key
-      const [tempApiKey, setTempApiKey] = useState('');
-      const [hasApiKey, setHasApiKey] = useState(geminiService.hasApiKey());
-
-      // AI Interaction
-      const [isLoadingAI, setLoadingAI] = useState(false);
-      const [aiReportContent, setAiReportContent] = useState('');
-      const [isPolishingNote, setPolishingNote] = useState(false);
-
       const [teachingModes, setTeachingModes] = useState([
         { id: 'lecture', name: '講述教學', icon: 'presentation', active: false, elapsedTime: 0 },
         { id: 'group-discussion', name: '小組討論', icon: 'users', active: false, elapsedTime: 0 },
@@ -272,11 +162,6 @@
         const diff = Math.floor((currentTime.getTime() - sessionStartTime) / 1000);
         return formatTime(diff);
       }, [sessionActive, sessionStartTime, currentTime, formatTime]);
-
-      const sanitizedAiReportContent = useMemo(() => {
-        if (!aiReportContent) return { __html: '' };
-        return { __html: marked.parse(aiReportContent) };
-      }, [aiReportContent]);
 
       const engagementColor = useMemo(() => {
         if (engagementValue > 66) return 'bg-green-500';
@@ -334,7 +219,6 @@
           setTeachingModes(modes => modes.map(m => ({ ...m, active: false, elapsedTime: 0 })));
           setTeachingActions(actions => actions.map(a => ({ ...a, count: 0 })));
           setQualitativeNote('');
-          setAiReportContent('');
           setEngagementValue(50);
           setLastEngagementLogTime(null);
           setNeedsEngagementReminder(false);
@@ -392,38 +276,6 @@
         addLog(`質性紀錄: ${qualitativeNote}`, 'note');
         setQualitativeNote('');
       }, [sessionActive, qualitativeNote, addLog]);
-
-      const saveApiKey = useCallback(() => {
-        if (tempApiKey) {
-          geminiService.setApiKey(tempApiKey);
-          setHasApiKey(true);
-          setSettingsModalVisible(false);
-          setApiKeyMissingPromptVisible(false);
-          setTempApiKey('');
-        }
-      }, [tempApiKey]);
-      
-      const checkApiKey = useCallback(() => {
-        if (!geminiService.hasApiKey()) {
-          setApiKeyMissingPromptVisible(true);
-          return false;
-        }
-        return true;
-      }, []);
-      
-      const polishNote = async () => {
-        if (!checkApiKey() || !qualitativeNote.trim()) return;
-        setPolishingNote(true);
-        try {
-          const polished = await geminiService.polishText(qualitativeNote);
-          setQualitativeNote(polished);
-        } catch (error) {
-          console.error('Error polishing note:', error);
-          alert('AI 潤飾時發生錯誤，請稍後再試。');
-        } finally {
-          setPolishingNote(false);
-        }
-      };
       
       const generateFullLog = useCallback(() => ({
         subject: selectedSubject,
@@ -434,22 +286,6 @@
         logs: [...logs].reverse() // chronological order
       }), [selectedSubject, sessionStartTime, teachingModes, teachingActions, logs]);
 
-      const generateAiReport = async () => {
-        if (!checkApiKey()) return;
-        setLoadingAI(true);
-        setAiReportContent('');
-        try {
-          const fullLog = generateFullLog();
-          const report = await geminiService.generateReport(fullLog);
-          setAiReportContent(report);
-        } catch (error) {
-          console.error('Error generating AI report:', error);
-          setAiReportContent('### 報告生成失敗\n\n抱歉，與 AI 連線時發生錯誤。請檢查您的 API 金鑰是否正確，或稍後再試。');
-        } finally {
-          setLoadingAI(false);
-        }
-      };
-      
       const copyLogToClipboard = useCallback(() => {
         const logData = generateFullLog();
         let reportText = `Chronos AI 觀課紀錄\n科目: ${logData.subject}\n開始時間: ${new Date(logData.sessionStart).toLocaleString()}\n結束時間: ${new Date(logData.sessionEnd).toLocaleString()}\n\n--- 教學模式計時 ---\n`;
@@ -457,7 +293,7 @@
         reportText += `\n--- 教學行為計次 ---\n`;
         logData.actions.forEach(a => { reportText += `${a.name}: ${a.count} 次\n`; });
         reportText += `\n--- 詳細事件紀錄 ---\n`;
-        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}\n`; });
+        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString('en-GB')}] ${l.message}\n`; });
         navigator.clipboard.writeText(reportText).then(() => alert('紀錄已複製到剪貼簿！')).catch(err => alert('複製失敗。'));
       }, [generateFullLog, formatTime]);
 
@@ -468,7 +304,7 @@
         reportText += `\n--- 教學行為計次 ---\n`;
         logData.actions.forEach(a => { reportText += `${a.name}: ${a.count} 次\n`; });
         reportText += `\n--- 詳細事件紀錄 ---\n`;
-        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}\n`; });
+        logData.logs.forEach(l => { reportText += `[${new Date(l.timestamp).toLocaleTimeString('en-GB')}] ${l.message}\n`; });
         
         const blob = new Blob(['\uFEFF' + reportText], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -480,6 +316,30 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, [generateFullLog, formatTime]);
+
+      const summaryReportText = useMemo(() => {
+        if (!isSummaryModalVisible) return '';
+        const logData = generateFullLog();
+        if (!logData.sessionStart) return '沒有可顯示的紀錄。';
+
+        let reportText = `Chronos AI 觀課紀錄\n`;
+        reportText += `科目: ${logData.subject}\n`;
+        reportText += `開始時間: ${new Date(logData.sessionStart).toLocaleString()}\n`;
+        reportText += `結束時間: ${new Date(logData.sessionEnd).toLocaleString()}\n\n`;
+        reportText += `--- 教學模式計時 ---\n`;
+        logData.modes.forEach(m => {
+            reportText += `${m.name}: ${formatTime(m.totalTime)}\n`;
+        });
+        reportText += `\n--- 教學行為計次 ---\n`;
+        logData.actions.forEach(a => {
+            reportText += `${a.name}: ${a.count} 次\n`;
+        });
+        reportText += `\n--- 詳細事件紀錄 ---\n`;
+        logData.logs.forEach(l => {
+            reportText += `[${new Date(l.timestamp).toLocaleTimeString('en-GB')}] ${l.message}\n`;
+        });
+        return reportText;
+    }, [isSummaryModalVisible, generateFullLog, formatTime]);
 
 
       return (
@@ -501,9 +361,6 @@
                 <div className="hidden md:flex items-center gap-2 bg-slate-800/50 px-4 py-2 rounded-full text-lg font-mono tracking-widest">
                   <span>{currentTime.toLocaleTimeString('en-GB')}</span>
                 </div>
-                <button onClick={() => setSettingsModalVisible(true)} className="p-2 rounded-full hover:bg-slate-700 transition-colors">
-                    <Icon name="settings" className="w-6 h-6 text-slate-400"/>
-                </button>
                 <button onClick={toggleSession} className={`w-20 h-12 flex items-center justify-center rounded-lg relative overflow-hidden transition-all duration-300 ease-in-out ${sessionActive ? 'bg-red-900/50 hover:bg-red-800/60' : 'bg-slate-800 hover:bg-slate-700'}`}>
                     {!sessionActive ? <StartButton /> : <StopButton />}
                 </button>
@@ -570,10 +427,7 @@
               </div>
               <div className="md:col-span-2 flex items-center gap-2 relative">
                 <div className="relative w-full">
-                  <input type="text" value={qualitativeNote} onChange={e => setQualitativeNote(e.target.value)} onKeyUp={e => e.key === 'Enter' && submitQualitativeNote()} disabled={!sessionActive} placeholder="輸入質性紀錄..." className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 pr-24 focus:ring-amber-500 focus:border-amber-500 transition-colors" />
-                  <button onClick={polishNote} disabled={isPolishingNote || !qualitativeNote.trim()} className="absolute right-12 top-1/2 -translate-y-1/2 p-2 rounded-full hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                    {isPolishingNote ? <Icon name="loader" className="w-5 h-5 text-amber-400 animate-spin"/> : <Icon name="magic" className="w-5 h-5 text-amber-400"/>}
-                  </button>
+                  <input type="text" value={qualitativeNote} onChange={e => setQualitativeNote(e.target.value)} onKeyUp={e => e.key === 'Enter' && submitQualitativeNote()} disabled={!sessionActive} placeholder="輸入質性紀錄..." className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 focus:ring-amber-500 focus:border-amber-500 transition-colors" />
                 </div>
                 <button onClick={submitQualitativeNote} disabled={!sessionActive || !qualitativeNote.trim()} className="bg-amber-500 text-slate-900 font-semibold px-4 py-2 rounded-lg hover:bg-amber-400 transition-colors disabled:bg-slate-600 disabled:cursor-not-allowed">發送</button>
               </div>
@@ -581,33 +435,6 @@
           </footer>
 
           {/* Modals */}
-          {isSettingsModalVisible && (
-            <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center" onClick={() => setSettingsModalVisible(false)}>
-              <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-                <h3 className="text-xl font-bold text-amber-400 mb-4">API 金鑰設定</h3>
-                <p className="text-slate-400 mb-4">請輸入您的 Google Gemini API 金鑰。此金鑰將安全地儲存在您的瀏覽器中，並在 2 小時後自動銷毀。</p>
-                <input type="password" value={tempApiKey} onChange={e => setTempApiKey(e.target.value)} placeholder="您的 API 金鑰..." className="w-full bg-slate-800 border border-slate-600 rounded-md p-2 mb-4 focus:ring-amber-500 focus:border-amber-500" />
-                <div className="flex justify-end gap-3">
-                  <button onClick={() => setSettingsModalVisible(false)} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">取消</button>
-                  <button onClick={saveApiKey} className="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">儲存</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isApiKeyMissingPromptVisible && (
-            <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center" onClick={() => setApiKeyMissingPromptVisible(false)}>
-              <div className="bg-slate-900 border border-rose-500 rounded-lg p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-                <h3 className="text-xl font-bold text-rose-400 mb-4">缺少 API 金鑰</h3>
-                <p className="text-slate-400 mb-4">您需要設定 Google Gemini API 金鑰才能使用 AI 功能。</p>
-                <div className="flex justify-end gap-3">
-                  <button onClick={() => setApiKeyMissingPromptVisible(false)} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">稍後</button>
-                  <button onClick={() => { setSettingsModalVisible(true); setApiKeyMissingPromptVisible(false); }} className="px-4 py-2 rounded-md bg-amber-500 text-slate-900 font-semibold hover:bg-amber-400 transition-colors">前往設定</button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {isSummaryModalVisible && (
             <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center p-4">
               <div className="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-3xl shadow-2xl flex flex-col h-[90vh]">
@@ -616,20 +443,10 @@
                   <button onClick={() => setSummaryModalVisible(false)} className="p-2 rounded-full hover:bg-slate-700 transition-colors"><Icon name="close" className="w-6 h-6"/></button>
                 </header>
                 <main className="flex-1 p-6 overflow-y-auto">
-                  {isLoadingAI ? (
-                    <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                      <Icon name="loader" className="w-12 h-12 text-amber-400 animate-spin mb-4"/>
-                      <p className="text-lg">AI 報告生成中，請稍候...</p>
-                      <p className="text-sm mt-2">這可能需要一點時間，感謝您的耐心。</p>
-                    </div>
-                  ) : aiReportContent ? (
-                    <div className="prose max-w-none" dangerouslySetInnerHTML={sanitizedAiReportContent}></div>
-                  ) : (
-                    <div className="text-center text-slate-400">
-                      <p className="mb-6">觀課已結束。您可以複製或下載原始紀錄，或點擊下方按鈕生成 AI 觀課報告。</p>
-                      <button onClick={generateAiReport} className="bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold py-3 px-6 rounded-lg text-lg hover:opacity-90 transition-opacity shadow-lg shadow-amber-500/20">✨ 生成 AI 觀課報告</button>
-                    </div>
-                  )}
+                   <h4 className="text-lg font-semibold text-slate-300 mb-2">觀課紀錄總覽</h4>
+                    <pre className="w-full h-full bg-slate-800 p-4 rounded-md text-sm text-slate-300 whitespace-pre-wrap overflow-y-auto font-mono">
+                        {summaryReportText}
+                    </pre>
                 </main>
                 <footer className="p-4 border-t border-slate-700 flex flex-wrap justify-end gap-3">
                   <button onClick={copyLogToClipboard} className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors">複製紀錄</button>
